@@ -29,7 +29,7 @@ def validate_move(engine_path, fen, moves):
     # Use a large number for mate score
 
     engine.quit()
-    return stockfish_move.uci(), moves[1], winning_chance > 0.9
+    return stockfish_move.uci() == moves[1] and winning_chance > 0.9
 
 
 def validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, lowest_rating, highest_rating, max_puzzles):
@@ -72,8 +72,8 @@ def validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, lowest_
                 # Process tasks in batches of 10
                 if len(tasks) == 10:
                     for task in as_completed(tasks):
-                        stockfish_move, correct_move, winning = task.result()
-                        if stockfish_move == correct_move and winning:
+                        valid = task.result()
+                        if valid:
                             placeholders = ', '.join(['?' for _ in headers])
                             cursor.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})',
                                            [row[header] for header in headers])
@@ -90,8 +90,8 @@ def validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, lowest_
             for task in as_completed(tasks):
                 if processed_count >= max_puzzles:
                     break
-                stockfish_move, correct_move, winning = task.result()
-                if stockfish_move == correct_move and winning:
+                valid = task.result()
+                if valid:
                     placeholders = ', '.join(['?' for _ in headers])
                     cursor.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})',
                                    [row[header] for header in headers])
