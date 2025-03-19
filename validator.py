@@ -29,11 +29,11 @@ def validate_move(engine_path, fen, moves):
     # Use a large number for mate score
 
     engine.quit()
-    return stockfish_move.uci(), moves[1] and winning_chance > 0.9
+    return stockfish_move.uci(), moves[1], winning_chance > 0.9
 
 
 def validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, lowest_rating, highest_rating, max_puzzles):
-    incorrect_puzzle_ids = []
+    incorrect_puzzle_ids = set()
 
     # Connect to SQLite database (or create it)
     conn = sqlite3.connect(sqlite_db_path)
@@ -58,8 +58,7 @@ def validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, lowest_
         processed_count = 0
         with ThreadPoolExecutor() as executor, tqdm(total=max_puzzles) as pbar:
             for row in reader:
-                if processed_count >= max_puzzles:
-                    break
+
                 if (not lowest_rating <= int(row['Rating']) <= highest_rating or int(row['Popularity']) < 90) and int(
                         row['NbPlays']) < 1000:
                     continue
@@ -73,32 +72,33 @@ def validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, lowest_
                 # Process tasks in batches of 10
                 if len(tasks) == 10:
                     for task in as_completed(tasks):
-                        stockfish_move, correct_move = task.result()
-                        if stockfish_move == correct_move:
+                        stockfish_move, correct_move, winning = task.result()
+                        if stockfish_move == correct_move and winning:
                             placeholders = ', '.join(['?' for _ in headers])
                             cursor.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})',
                                            [row[header] for header in headers])
+                            pbar.update(1)
+                            processed_count += 1
+                            if processed_count >= max_puzzles:
+                                break
                         else:
-                            incorrect_puzzle_ids.append(row['PuzzleId'])
-                        pbar.update(1)
-                        processed_count += 1
-                        if processed_count >= max_puzzles:
-                            break
+                            incorrect_puzzle_ids.add(row['PuzzleId'])
+
                     tasks = []
 
             # Process any remaining tasks
             for task in as_completed(tasks):
                 if processed_count >= max_puzzles:
                     break
-                stockfish_move, correct_move = task.result()
-                if stockfish_move == correct_move:
+                stockfish_move, correct_move, winning = task.result()
+                if stockfish_move == correct_move and winning:
                     placeholders = ', '.join(['?' for _ in headers])
                     cursor.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})',
                                    [row[header] for header in headers])
+                    pbar.update(1)
+                    processed_count += 1
                 else:
-                    incorrect_puzzle_ids.append(row['PuzzleId'])
-                pbar.update(1)
-                processed_count += 1
+                    incorrect_puzzle_ids.add(row['PuzzleId'])
 
     # Commit the transaction and close the connection
     conn.commit()
