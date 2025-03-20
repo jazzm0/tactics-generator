@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 lock = threading.Lock()
 
+
 def view_db_content(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -25,6 +26,7 @@ def view_db_content(db_path):
         print("\n")
 
     conn.close()
+
 
 def validate_move(engine_path, fen, moves):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
@@ -47,6 +49,7 @@ def validate_move(engine_path, fen, moves):
     engine.quit()
     return stockfish_move.uci() == moves[1] and winning_chance > 0.9
 
+
 def create_table(cursor, table_name, headers):
     column_types = {header: 'TEXT' for header in headers}
     for col in ['Rating', 'RatingDeviation', 'Popularity']:
@@ -54,6 +57,7 @@ def create_table(cursor, table_name, headers):
             column_types[col] = 'INTEGER'
     columns = ', '.join([f'"{header}" {column_types[header]}' for header in headers])
     cursor.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({columns}, UNIQUE("PuzzleId"))')
+
 
 def insert_puzzle(cursor, table_name, headers, row, written_puzzle_ids, pbar: tqdm):
     with lock:
@@ -67,7 +71,9 @@ def insert_puzzle(cursor, table_name, headers, row, written_puzzle_ids, pbar: tq
         except sqlite3.IntegrityError:
             pass
 
-def process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles, incorrect_puzzle_ids):
+
+def process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles,
+                  incorrect_puzzle_ids):
     for task in as_completed(tasks):
         row_dict = task.row_dict
         if len(written_puzzle_ids) >= max_puzzles:
@@ -77,7 +83,9 @@ def process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids,
         else:
             incorrect_puzzle_ids.add(row_dict['PuzzleId'])
 
-def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db_path, lowest_rating, highest_rating, max_puzzles):
+
+def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db_path, lowest_rating, highest_rating,
+                             max_puzzles):
     if os.path.exists(sqlite_output_db_path):
         os.remove(sqlite_output_db_path)
 
@@ -89,7 +97,7 @@ def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db
 
     cursor_input.execute("SELECT * FROM lichess_db_puzzle ORDER BY Rating DESC")
     headers = [description[0] for description in cursor_input.description]
-    table_name = "validated_puzzles"
+    table_name = "lichess_db_puzzle"
     create_table(cursor_output, table_name, headers)
 
     tasks = []
@@ -123,18 +131,21 @@ def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db
             tasks.append(future)
 
             if len(tasks) >= 10:
-                process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles, incorrect_puzzle_ids)
+                process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles,
+                              incorrect_puzzle_ids)
                 tasks = []
 
-        process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles, incorrect_puzzle_ids)
+        process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles,
+                      incorrect_puzzle_ids)
 
     conn_output.commit()
     conn_output.close()
     conn_input.close()
 
+
 engine_path = '/opt/homebrew/Cellar/stockfish/17/bin/stockfish'
 sqlite_db_path = 'validated_puzzles.db'
 sqlite_input_db_path = 'all_puzzles.db'
-max_puzzles = 10000
-validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_db_path, 2001, 3500, max_puzzles)
-view_db_content(sqlite_db_path)
+max_puzzles = 100000
+validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_db_path, 1600, 3500, max_puzzles)
+# view_db_content(sqlite_db_path)
