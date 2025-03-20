@@ -1,24 +1,41 @@
-import csv
+import os
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import chess
 import chess.engine
 from tqdm import tqdm
 
-from path import csv_file_path
+lock = threading.Lock()
 
+def view_db_content(db_path):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = cursor.fetchall()
+
+    for table in tables:
+        print(f"Table: {table[0]}")
+        cursor.execute(f"SELECT * FROM {table[0]};")
+        rows = cursor.fetchall()
+        for row in rows:
+            print(row)
+        print("\n")
+
+    conn.close()
 
 def validate_move(engine_path, fen, moves):
     engine = chess.engine.SimpleEngine.popen_uci(engine_path)
     engine.configure({"Skill Level": 20})
 
     board = chess.Board(fen)
-    board.push_uci(moves[0])  # Make the first move to set up the position for the second move
-    result = engine.play(board, chess.engine.Limit(time=2.0))  # Set a time limit for the engine
+    board.push_uci(moves[0])
+    result = engine.play(board, chess.engine.Limit(time=2.0))
     stockfish_move = result.move
     info = engine.analyse(board, chess.engine.Limit(time=2.0))
-    score = info['score'].relative.score(mate_score=10000)  # Use a large number for mate score
+    score = info['score'].relative.score(mate_score=10000)
 
     if score is None:
         winning_chance = None
@@ -26,90 +43,98 @@ def validate_move(engine_path, fen, moves):
         winning_chance = 1 / (1 + 10 ** (-score / 400))
     else:
         winning_chance = 1 - 1 / (1 + 10 ** (score / 400))
-    # Use a large number for mate score
 
     engine.quit()
     return stockfish_move.uci() == moves[1] and winning_chance > 0.9
 
+def create_table(cursor, table_name, headers):
+    column_types = {header: 'TEXT' for header in headers}
+    for col in ['Rating', 'RatingDeviation', 'Popularity']:
+        if col in column_types:
+            column_types[col] = 'INTEGER'
+    columns = ', '.join([f'"{header}" {column_types[header]}' for header in headers])
+    cursor.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({columns}, UNIQUE("PuzzleId"))')
 
-def validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, lowest_rating, highest_rating, max_puzzles):
-    incorrect_puzzle_ids = set()
+def insert_puzzle(cursor, table_name, headers, row, written_puzzle_ids, pbar: tqdm):
+    with lock:
+        if row['PuzzleId'] in written_puzzle_ids or len(written_puzzle_ids) >= max_puzzles:
+            return
+        written_puzzle_ids.add(row['PuzzleId'])
+        pbar.update(1)
+        placeholders = ', '.join(['?' for _ in headers])
+        try:
+            cursor.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})', [row[header] for header in headers])
+        except sqlite3.IntegrityError:
+            pass
 
-    # Connect to SQLite database (or create it)
-    conn = sqlite3.connect(sqlite_db_path)
-    cursor = conn.cursor()
+def process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles, incorrect_puzzle_ids):
+    for task in as_completed(tasks):
+        row_dict = task.row_dict
+        if len(written_puzzle_ids) >= max_puzzles:
+            break
+        if task.result():
+            insert_puzzle(cursor_output, table_name, headers, row_dict, written_puzzle_ids, pbar)
+        else:
+            incorrect_puzzle_ids.add(row_dict['PuzzleId'])
 
-    with open(csv_file_path, newline='') as csvfile:
-        reader = csv.DictReader(csvfile)
-        headers = reader.fieldnames
+def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db_path, lowest_rating, highest_rating, max_puzzles):
+    if os.path.exists(sqlite_output_db_path):
+        os.remove(sqlite_output_db_path)
 
-        # Define column types
-        column_types = {header: 'TEXT' for header in headers}
-        for col in ['Rating', 'RatingDeviation', 'Popularity']:
-            if col in column_types:
-                column_types[col] = 'INTEGER'
+    written_puzzle_ids, incorrect_puzzle_ids = set(), set()
+    conn_input = sqlite3.connect(sqlite_input_db_path)
+    cursor_input = conn_input.cursor()
+    conn_output = sqlite3.connect(sqlite_output_db_path)
+    cursor_output = conn_output.cursor()
 
-        # Create a table with the same name as the CSV file (without extension)
-        table_name = csv_file_path.split('/')[-1].split('.')[0]
-        columns = ', '.join([f'"{header}" {column_types[header]}' for header in headers])
-        cursor.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({columns})')
+    cursor_input.execute("SELECT * FROM lichess_db_puzzle ORDER BY Rating DESC")
+    headers = [description[0] for description in cursor_input.description]
+    table_name = "validated_puzzles"
+    create_table(cursor_output, table_name, headers)
 
-        tasks = []
-        processed_count = 0
-        with ThreadPoolExecutor() as executor, tqdm(total=max_puzzles) as pbar:
-            for row in reader:
+    tasks = []
+    with ThreadPoolExecutor() as executor, tqdm(total=max_puzzles) as pbar:
+        for row in cursor_input:
+            if len(written_puzzle_ids) >= max_puzzles:
+                break
+            row_dict = dict(zip(headers, row))
+            rating = int(row_dict['Rating'])
+            popularity = int(row_dict['Popularity'])
+            nb_plays = int(row_dict['NbPlays'])
+            rating_deviation = int(row_dict['RatingDeviation'])
 
-                if (not lowest_rating <= int(row['Rating']) <= highest_rating or int(row['Popularity']) < 90) and int(
-                        row['NbPlays']) < 1000:
-                    continue
-                fen = row['FEN']
-                moves = row['Moves'].split()
-                if len(moves) < 2:
-                    print(f"Puzzle ID {row['PuzzleId']}: Not enough moves to validate")
-                    continue
-                tasks.append(executor.submit(validate_move, engine_path, fen, moves))
+            if not (lowest_rating <= rating <= highest_rating and
+                    popularity >= 90 and
+                    nb_plays >= 1000 and
+                    rating_deviation < 100):
+                continue
 
-                # Process tasks in batches of 10
-                if len(tasks) == 10:
-                    for task in as_completed(tasks):
-                        valid = task.result()
-                        if valid:
-                            placeholders = ', '.join(['?' for _ in headers])
-                            cursor.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})',
-                                           [row[header] for header in headers])
-                            pbar.update(1)
-                            processed_count += 1
-                            if processed_count >= max_puzzles:
-                                break
-                        else:
-                            incorrect_puzzle_ids.add(row['PuzzleId'])
+            fen = row_dict['FEN']
+            moves = row_dict['Moves'].split()
+            if len(moves) < 2:
+                print(f"Puzzle ID {row_dict['PuzzleId']}: Not enough moves to validate")
+                continue
 
-                    tasks = []
+            if row_dict['PuzzleId'] in written_puzzle_ids:
+                continue
 
-            # Process any remaining tasks
-            for task in as_completed(tasks):
-                if processed_count >= max_puzzles:
-                    break
-                valid = task.result()
-                if valid:
-                    placeholders = ', '.join(['?' for _ in headers])
-                    cursor.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})',
-                                   [row[header] for header in headers])
-                    pbar.update(1)
-                    processed_count += 1
-                else:
-                    incorrect_puzzle_ids.add(row['PuzzleId'])
+            future = executor.submit(validate_move, engine_path, fen, moves)
+            future.row_dict = row_dict
+            tasks.append(future)
 
-    # Commit the transaction and close the connection
-    conn.commit()
-    conn.close()
+            if len(tasks) >= 10:
+                process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles, incorrect_puzzle_ids)
+                tasks = []
 
-    print("Incorrect or low scored Puzzle IDs:")
-    for puzzle_id in incorrect_puzzle_ids:
-        print(puzzle_id)
+        process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles, incorrect_puzzle_ids)
 
+    conn_output.commit()
+    conn_output.close()
+    conn_input.close()
 
 engine_path = '/opt/homebrew/Cellar/stockfish/17/bin/stockfish'
 sqlite_db_path = 'validated_puzzles.db'
+sqlite_input_db_path = 'all_puzzles.db'
 max_puzzles = 10000
-validate_and_store_moves(csv_file_path, engine_path, sqlite_db_path, 2001, 3500, max_puzzles)
+validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_db_path, 2001, 3500, max_puzzles)
+view_db_content(sqlite_db_path)
