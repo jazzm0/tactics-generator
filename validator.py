@@ -52,7 +52,7 @@ def validate_move(engine_path, fen, moves):
 
 def create_table(cursor, table_name, headers):
     column_types = {header: 'TEXT' for header in headers}
-    for col in ['Rating', 'RatingDeviation', 'Popularity']:
+    for col in ['Rating', 'RatingDeviation', 'Popularity', 'NbPlays']:
         if col in column_types:
             column_types[col] = 'INTEGER'
     columns = ', '.join([f'"{header}" {column_types[header]}' for header in headers])
@@ -95,7 +95,7 @@ def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db
     conn_output = sqlite3.connect(sqlite_output_db_path)
     cursor_output = conn_output.cursor()
 
-    cursor_input.execute("SELECT * FROM lichess_db_puzzle ORDER BY Rating DESC")
+    cursor_input.execute("SELECT * FROM lichess_db_puzzle ORDER BY Popularity DESC, Rating DESC, NbPlays DESC")
     headers = [description[0] for description in cursor_input.description]
     table_name = "lichess_db_puzzle"
     create_table(cursor_output, table_name, headers)
@@ -146,6 +146,8 @@ def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db
 engine_path = '/opt/homebrew/Cellar/stockfish/17/bin/stockfish'
 sqlite_db_path = 'validated_puzzles.db'
 sqlite_input_db_path = 'all_puzzles.db'
-max_puzzles = 100000
+max_puzzles = 2000
 validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_db_path, 1600, 3500, max_puzzles)
 # view_db_content(sqlite_db_path)
+
+

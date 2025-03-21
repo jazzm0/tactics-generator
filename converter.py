@@ -13,7 +13,7 @@ def csv_to_sqlite(csv_file_path, sqlite_db_path):
         headers = next(reader)
 
         column_types = {header: 'TEXT' for header in headers}
-        for col in ['Rating', 'RatingDeviation', 'Popularity']:
+        for col in ['Rating', 'RatingDeviation', 'Popularity', 'NbPlays']:
             if col in column_types:
                 column_types[col] = 'INTEGER'
 
