@@ -5,9 +5,25 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import chess
 import chess.engine
+import numpy as np
+from intervaltree import IntervalTree, Interval
 from tqdm import tqdm
 
 lock = threading.Lock()
+
+
+def create_interval_tree_with_distribution(lowest_rating, highest_rating, mean_rating, std_dev, max_puzzles, step=10):
+    # Generate a normal distribution of ratings
+    normal_ratings = np.random.normal(mean_rating, std_dev, max_puzzles).astype(int)
+
+    # Create an IntervalTree
+    tree = IntervalTree()
+    for start in range(lowest_rating, highest_rating, step):
+        end = start + step
+        count = ((normal_ratings >= start) & (normal_ratings < end)).sum()
+        tree[start:end] = count
+
+    return tree
 
 
 def view_db_content(db_path):
@@ -73,19 +89,27 @@ def insert_puzzle(cursor, table_name, headers, row, written_puzzle_ids, pbar: tq
 
 
 def process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles,
-                  incorrect_puzzle_ids):
+                  incorrect_puzzle_ids, interval_tree):
     for task in as_completed(tasks):
         row_dict = task.row_dict
         if len(written_puzzle_ids) >= max_puzzles:
             break
         if task.result():
-            insert_puzzle(cursor_output, table_name, headers, row_dict, written_puzzle_ids, pbar)
+            rating = int(row_dict['Rating'])
+            intervals = interval_tree[rating]
+            if intervals:
+                interval = intervals.pop()
+                interval_tree.remove(interval)
+                new_interval = Interval(interval.begin, interval.end, interval.data - 1)
+                if new_interval.data > 0:
+                    interval_tree.add(new_interval)
+                    insert_puzzle(cursor_output, table_name, headers, row_dict, written_puzzle_ids, pbar)
         else:
             incorrect_puzzle_ids.add(row_dict['PuzzleId'])
 
 
 def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db_path, lowest_rating, highest_rating,
-                             max_puzzles):
+                             mean_rating, std_dev, max_puzzles, step=10):
     if os.path.exists(sqlite_output_db_path):
         os.remove(sqlite_output_db_path)
 
@@ -99,6 +123,9 @@ def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db
     headers = [description[0] for description in cursor_input.description]
     table_name = "lichess_db_puzzle"
     create_table(cursor_output, table_name, headers)
+
+    interval_tree = create_interval_tree_with_distribution(lowest_rating, highest_rating, mean_rating, std_dev,
+                                                           max_puzzles, step)
 
     tasks = []
     with ThreadPoolExecutor() as executor, tqdm(total=max_puzzles) as pbar:
@@ -132,11 +159,11 @@ def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db
 
             if len(tasks) >= 10:
                 process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles,
-                              incorrect_puzzle_ids)
+                              incorrect_puzzle_ids, interval_tree)
                 tasks = []
 
         process_tasks(tasks, cursor_output, table_name, headers, written_puzzle_ids, pbar, max_puzzles,
-                      incorrect_puzzle_ids)
+                      incorrect_puzzle_ids, interval_tree)
 
     conn_output.commit()
     conn_output.close()
@@ -146,8 +173,6 @@ def validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_output_db
 engine_path = '/opt/homebrew/Cellar/stockfish/17/bin/stockfish'
 sqlite_db_path = 'validated_puzzles.db'
 sqlite_input_db_path = 'all_puzzles.db'
-max_puzzles = 2000
-validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_db_path, 1600, 3500, max_puzzles)
+max_puzzles = 100000
+validate_and_store_moves(sqlite_input_db_path, engine_path, sqlite_db_path, 1600, 3500, 2200, 300, max_puzzles)
 # view_db_content(sqlite_db_path)
-
-
