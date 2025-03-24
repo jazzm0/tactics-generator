@@ -1,30 +1,30 @@
-import csv
+import sqlite3
 
 from matplotlib import pyplot as plt
 
-from path import csv_file_path
 
-
-def plot_histogram(csv_file_path):
+def plot_histogram(sqlite_input_db_path):
     ratings = []
     popularity = []
     plays = []
 
-    # Read the CSV file and extract ratings
-    with open(csv_file_path, newline='') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            ratings.append(int(row['Rating']))
-            popularity.append(int(row['Popularity']))
-            plays.append(int(row['NbPlays']))
+    conn_input = sqlite3.connect(sqlite_input_db_path)
+    cursor_input = conn_input.cursor()
+    cursor_input.execute("SELECT * FROM lichess_db_puzzle ORDER BY Popularity DESC, Rating DESC, NbPlays DESC")
+    headers = [description[0] for description in cursor_input.description]
 
-    # # Plot the ratings using a histogram
-    # plt.figure(figsize=(10, 6))
-    # plt.hist(ratings, bins=50, alpha=0.75, edgecolor='black')
-    # plt.title('Rating Distribution of Chess Puzzles')
-    # plt.xlabel('Rating')
-    # plt.ylabel('Frequency')
-    # plt.show()
+    for row in cursor_input:
+        row_dict = dict(zip(headers, row))
+        ratings.append(int(row_dict['Rating']))
+        popularity.append(int(row_dict['Popularity']))
+        plays.append(int(row_dict['NbPlays']))
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(ratings, bins=50, alpha=0.75, edgecolor='black')
+    plt.title('Rating Distribution of Chess Puzzles')
+    plt.xlabel('Rating')
+    plt.ylabel('Frequency')
+    plt.show()
     #
     # plt.figure(figsize=(10, 6))
     # plt.hist(popularity, bins=50, alpha=0.75, edgecolor='black')
@@ -33,12 +33,12 @@ def plot_histogram(csv_file_path):
     # plt.ylabel('Frequency')
     # plt.show()
 
-    plt.figure(figsize=(10, 6))
-    plt.hist(plays, bins=50, alpha=0.75, edgecolor='black')
-    plt.title('NbPlays Distribution of Chess Puzzles')
-    plt.xlabel('NbPlays')
-    plt.ylabel('Frequency')
-    plt.show()
+    # plt.figure(figsize=(10, 6))
+    # plt.hist(plays, bins=50, alpha=0.75, edgecolor='black')
+    # plt.title('NbPlays Distribution of Chess Puzzles')
+    # plt.xlabel('NbPlays')
+    # plt.ylabel('Frequency')
+    # plt.show()
 
 
-plot_histogram(csv_file_path)
+plot_histogram("validated_puzzles.db")
